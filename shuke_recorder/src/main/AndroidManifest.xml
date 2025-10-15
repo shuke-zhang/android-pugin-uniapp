@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- 🔊 必须：录音权限 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- 🎚 建议：修改音频输出相关设置 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- ⚙️ 可选：访问麦克风输入特征（部分机型用于AEC） -->
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <!-- ⚙️ 仅调试日志时可加 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
 </manifest>

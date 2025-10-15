@@ -37,6 +37,16 @@
           "class": "com.example.plugin_shuke.test"
         }
       ]
+    },
+    {
+      "hooksClass": "",
+      "plugins": [
+        {
+          "type": "module",
+          "name": "shuke_recorder",
+          "class": "com.example.shuke_recorder.RecorderModule"
+        }
+      ]
     }
   ]
 }
