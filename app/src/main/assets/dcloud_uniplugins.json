@@ -63,8 +63,8 @@
       "plugins": [
         {
           "type": "module",
-          "name": "shuke_audioPlay",
-          "class": "com.example.shuke_audioplay.AudioModule"
+          "name": "shuke_audio_play",
+          "class": "com.example.shuke_audio_play.AudioModule"
         }
       ]
     }

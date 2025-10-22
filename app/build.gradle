@@ -86,7 +86,7 @@ dependencies {
     implementation project(':plugin_shuke')
     implementation project(':shuke_recorder')
     implementation project(':shuke_microphone')
-    implementation project(':shuke_audioPlay')
+    implementation project(':shuke_audio_play')
 
     // uts原生插件
     implementation project(':uts-toast')

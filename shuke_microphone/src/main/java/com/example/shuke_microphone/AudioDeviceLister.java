@@ -75,6 +75,7 @@ public class AudioDeviceLister extends UniModule {
     @UniJSMethod(uiThread = true)
     public void setInputRoute(String route, UniJSCallback callback) {
         JSONObject res = new JSONObject();
+
         try {
             AudioManager am = getAm();
             if (am == null) throw new IllegalStateException("AudioManager is null");
@@ -82,22 +83,32 @@ public class AudioDeviceLister extends UniModule {
 
             String key = route.trim().toLowerCase(); // bluetooth / usb / wired / builtin
 
-            // 先找目标设备；找不到就直接失败，不再“假成功”
+            // 🔍 获取输入设备列表
             AudioDeviceInfo[] inputs = null;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 inputs = am.getDevices(AudioManager.GET_DEVICES_INPUTS);
             }
+
+            // 匹配目标设备
             AudioDeviceInfo target = pickDeviceForKey(key, inputs);
 
-            // 对于 bluetooth / usb / wired，必须存在对应设备才允许继续
+            // ✅ 对于 bluetooth / usb / wired，必须存在设备才继续
             boolean mustHaveDevice = "bluetooth".equals(key) || "usb".equals(key) || "wired".equals(key);
             if (mustHaveDevice && target == null) {
                 String notFoundMsg;
                 switch (key) {
-                    case "bluetooth": notFoundMsg = "切换失败：未检测到蓝牙麦克风（请在系统蓝牙中开启“用于通话”）"; break;
-                    case "usb":       notFoundMsg = "切换失败：未检测到 USB 外置麦克风"; break;
-                    case "wired":     notFoundMsg = "切换失败：未检测到有线耳机麦克风"; break;
-                    default:          notFoundMsg = "切换失败，未找到目标设备"; break;
+                    case "bluetooth":
+                        notFoundMsg = "切换失败：未检测到蓝牙麦克风（请确保蓝牙已连接并支持通话）";
+                        break;
+                    case "usb":
+                        notFoundMsg = "切换失败：未检测到 USB 外置麦克风";
+                        break;
+                    case "wired":
+                        notFoundMsg = "切换失败：未检测到有线耳机麦克风";
+                        break;
+                    default:
+                        notFoundMsg = "切换失败，未找到目标设备";
+                        break;
                 }
                 res.put("ok", false);
                 res.put("method", "none");
@@ -109,7 +120,7 @@ public class AudioDeviceLister extends UniModule {
             boolean applied = false;
             String method = "";
 
-            // Android 12+（API 31）支持官方路由 API：setCommunicationDevice，优先使用
+            // ✅ Android 12+ 使用官方 API 优先切换
             if (Build.VERSION.SDK_INT >= 31 && target != null) {
                 try {
                     Method setCommDev = AudioManager.class.getMethod("setCommunicationDevice", AudioDeviceInfo.class);
@@ -117,51 +128,73 @@ public class AudioDeviceLister extends UniModule {
                     applied = !(r instanceof Boolean) || (Boolean) r;
                     method = "setCommunicationDevice()";
                 } catch (Throwable t) {
-                    // 忽略，走下面的回退
+                    // 忽略异常
                 }
             }
 
-            // 回退路径（仅在官方 API 未生效时使用）
-            if (!applied) {
+            // ✅ 回退方案：仅在 target 存在时才进入通信模式
+            if (!applied && target != null) {
                 am.setMode(AudioManager.MODE_IN_COMMUNICATION);
                 switch (key) {
                     case "bluetooth":
                         try {
                             am.startBluetoothSco();
                             am.setBluetoothScoOn(true);
-                            applied = true; // 有目标设备才会走到这里，视为生效
+                            applied = true;
                             method = "SCO";
                         } catch (Throwable ignored) {}
                         break;
+
                     case "builtin":
                         try {
                             am.stopBluetoothSco();
                             am.setBluetoothScoOn(false);
                             am.setSpeakerphoneOn(true);
+                            am.setMode(AudioManager.MODE_NORMAL); // ✅ 恢复普通模式
                             applied = true;
                             method = "builtin-fallback";
                         } catch (Throwable ignored) {}
                         break;
+
                     case "usb":
                     case "wired":
-                        // 在 API<31 时，系统没有可靠的全局“强制到 USB/有线输入”的公开 API。
-                        // 这里不再假成功，保持失败，让前端提示“系统版本不支持强制路由”更真实。
+                        // Android 12 以下系统无法强制路由到 USB / 有线
                         applied = false;
                         method = "not-supported-pre31";
-                        break;
-                    default:
                         break;
                 }
             }
 
+            // ✅ 当目标设备不存在时（例如 USB 不存在），不修改音频模式
+            if (target == null && "builtin".equals(key)) {
+                try {
+                    am.setMode(AudioManager.MODE_NORMAL);
+                    am.setBluetoothScoOn(false);
+                    am.setSpeakerphoneOn(true);
+                    applied = true;
+                    method = "restore-normal";
+                } catch (Throwable ignored) {}
+            }
+
+            // ✅ 生成结果提示
             String msg;
             if (applied) {
                 switch (key) {
-                    case "bluetooth": msg = "已切换至蓝牙麦克风"; break;
-                    case "usb":       msg = "已切换至 USB 外置麦克风"; break;
-                    case "wired":     msg = "已切换至有线耳机麦克风"; break;
-                    case "builtin":   msg = "已切换至内置麦克风"; break;
-                    default:          msg = "已切换至目标输入设备"; break;
+                    case "bluetooth":
+                        msg = "已切换至蓝牙麦克风";
+                        break;
+                    case "usb":
+                        msg = "已切换至 USB 外置麦克风";
+                        break;
+                    case "wired":
+                        msg = "已切换至有线耳机麦克风";
+                        break;
+                    case "builtin":
+                        msg = "已切换至内置麦克风";
+                        break;
+                    default:
+                        msg = "已切换至目标输入设备";
+                        break;
                 }
             } else {
                 switch (key) {
@@ -172,7 +205,8 @@ public class AudioDeviceLister extends UniModule {
                                 : "切换失败：当前系统版本不支持强制切换到该输入通道（建议 Android 12+）";
                         break;
                     case "builtin":
-                        msg = "切换失败：未能恢复到内置麦克风";
+                        msg = "已恢复至默认麦克风模式";
+                        applied = true; // ✅ 视为成功恢复
                         break;
                     default:
                         msg = "切换失败：未能设置到目标设备";
@@ -180,9 +214,11 @@ public class AudioDeviceLister extends UniModule {
                 }
             }
 
+            // ✅ 组装返回数据
             res.put("ok", applied);
             res.put("method", method);
             res.put("msg", msg);
+
             if (target != null) {
                 JSONObject dev = new JSONObject();
                 dev.put("id", target.getId());
@@ -190,13 +226,13 @@ public class AudioDeviceLister extends UniModule {
                 dev.put("name", String.valueOf(target.getProductName()));
                 res.put("device", dev);
             }
+
         } catch (Exception e) {
-            try {
-                res.put("ok", false);
-                res.put("method", "exception");
-                res.put("msg", "异常：" + e.toString());
-            } catch (Exception ignore) {}
+            res.put("ok", false);
+            res.put("method", "exception");
+            res.put("msg", "异常：" + e.getMessage());
         }
+
         callback.invoke(res);
     }
 

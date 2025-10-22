@@ -1,4 +1,4 @@
-package com.example.shuke_audioplay;
+package com.example.shuke_audio_play;
 
 import android.content.Context;
 import android.os.Handler;
@@ -6,7 +6,6 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.alibaba.fastjson.JSONObject;
-import com.example.shuke_audioplay.AudioQueuePlayer;
 
 import java.lang.ref.WeakReference;
 

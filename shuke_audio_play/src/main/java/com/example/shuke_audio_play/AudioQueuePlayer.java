@@ -1,4 +1,4 @@
-package com.example.shuke_audioplay;
+package com.example.shuke_audio_play;
 
 import android.content.Context;
 import android.media.AudioAttributes;
@@ -12,7 +12,6 @@ import android.util.Log;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.Map;
 import java.util.TreeMap;
 
 /**

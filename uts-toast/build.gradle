@@ -4,6 +4,10 @@ plugins {
 }
 
 android {
+    signingConfigs {
+        shuke_audio_play {
+        }
+    }
     namespace 'com.example.uts_toast'
     compileSdkVersion 34
 
