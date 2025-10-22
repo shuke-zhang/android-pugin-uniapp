@@ -14,6 +14,8 @@
             <option value="$PROJECT_DIR$/mylibrary" />
             <option value="$PROJECT_DIR$/plugin_shuke" />
             <option value="$PROJECT_DIR$/shuke" />
+            <option value="$PROJECT_DIR$/shuke_audioPlay" />
+            <option value="$PROJECT_DIR$/shuke_microphone" />
             <option value="$PROJECT_DIR$/shuke_recorder" />
             <option value="$PROJECT_DIR$/uniplugin_component" />
             <option value="$PROJECT_DIR$/uniplugin_module" />

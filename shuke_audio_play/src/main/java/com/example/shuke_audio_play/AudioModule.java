@@ -1,4 +1,4 @@
-package com.example.plugin_shuke;
+package com.example.shuke_audioplay;
 
 import android.content.Context;
 import android.os.Handler;
@@ -6,6 +6,7 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.alibaba.fastjson.JSONObject;
+import com.example.shuke_audioplay.AudioQueuePlayer;
 
 import java.lang.ref.WeakReference;
 
@@ -100,10 +101,18 @@ public class AudioModule extends UniModule {
         }
         try {
             p.enqueue(id, base64);
-            if (callback != null) callback.invoke("任务添加成功：" + id);
+            if (callback != null) {
+                callback.invoke("任务添加成功：" + id);
+                Log.i(TAG, "✅ AudioQueuePlayer 任务添加成功");
+
+            }
         } catch (Exception e) {
             Log.e(TAG, "addTask error: " + e.getMessage());
-            if (callback != null) callback.invoke("❌ 任务添加失败：" + e.getMessage());
+            if (callback != null) {
+                callback.invoke("❌ 任务添加失败：" + e.getMessage());
+                Log.i(TAG, "❌ AudioQueuePlayer 任务添加失败");
+
+            }
         }
     }
 

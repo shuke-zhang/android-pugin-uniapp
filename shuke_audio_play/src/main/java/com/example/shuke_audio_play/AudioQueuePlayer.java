@@ -1,4 +1,4 @@
-package com.example.plugin_shuke;
+package com.example.shuke_audioplay;
 
 import android.content.Context;
 import android.media.AudioAttributes;
@@ -135,6 +135,7 @@ public class AudioQueuePlayer {
         isManualClear = false;  // 进入播放序列
         stopInternal();         // 停掉上一个
         isPlaying = true;
+        Log.i(TAG, "❌ 开始进行播放");
 
         try {
             player = new MediaPlayer();
@@ -155,9 +156,13 @@ public class AudioQueuePlayer {
             try (FileOutputStream fos = new FileOutputStream(tmp)) {
                 fos.write(data);
             }
+            Log.i(TAG, "🎧 开始播放任务，ID=" + task.id
+                    + " | 临时文件路径=" + tmp.getAbsolutePath()
+                    + " | 数据大小=" + data.length);
 
             player.setDataSource(tmp.getAbsolutePath());
             player.setOnPreparedListener(mp -> {
+                Log.i(TAG, "▶️ 已准备好，开始播放，ID=" + task.id);
                 if (listener != null) listener.onStart(String.valueOf(task.id), taskMap.size());
                 mp.start();
                 startProgress();
@@ -165,6 +170,7 @@ public class AudioQueuePlayer {
 
             player.setOnCompletionListener(mp -> {
                 stopProgress();
+                Log.i(TAG, "✅ 播放任务完成，ID=" + task.id);
                 if (listener != null) listener.onComplete(String.valueOf(task.id), taskMap.size());
                 // 当前任务完成，推进期望 ID
                 synchronized (AudioQueuePlayer.this) {

@@ -85,6 +85,9 @@ dependencies {
     implementation project(':uniplugin_richalert')
     implementation project(':plugin_shuke')
     implementation project(':shuke_recorder')
+    implementation project(':shuke_microphone')
+    implementation project(':shuke_audioPlay')
+
     // uts原生插件
     implementation project(':uts-toast')
     // uts依赖

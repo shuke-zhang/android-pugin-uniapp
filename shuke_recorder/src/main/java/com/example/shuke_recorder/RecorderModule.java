@@ -77,16 +77,29 @@ public class RecorderModule extends UniModule {
             public void onProcess(List<int[]> buffers, int volume, long durationMs, int sampleRate) {
                 JSONObject payload = new JSONObject();
                 JSONArray bufArr = new JSONArray();
+                // 1️⃣ 构造 PCM 原始数组
                 for (int[] arr : buffers) {
                     JSONObject obj = new JSONObject();
                     for (int i = 0; i < arr.length; i++) obj.put(String.valueOf(i), arr[i]);
                     bufArr.add(obj);
+
+
+
                 }
+                // 2️⃣ 转成 Base64（PCM 16-bit 小端）
+                byte[] pcmBytes = new byte[buffers.get(0).length * 2];
+                int idx = 0;
+                for (int sample : buffers.get(0)) {
+                    pcmBytes[idx++] = (byte) (sample & 0xff);
+                    pcmBytes[idx++] = (byte) ((sample >> 8) & 0xff);
+                }
+                String base64 = android.util.Base64.encodeToString(pcmBytes, android.util.Base64.NO_WRAP);
                 payload.put("buffers", bufArr);
                 payload.put("volume", volume);
                 payload.put("duration", durationMs);
                 payload.put("sampleRate", sampleRate);
                 payload.put("type", type);
+                payload.put("base64", base64);  // ✅ 加上这个！
                 eventCallback.invokeAndKeepAlive(payload);
             }
 

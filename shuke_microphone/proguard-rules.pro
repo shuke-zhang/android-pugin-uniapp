@@ -19,3 +19,10 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+-keep public class * extends io.dcloud.feature.uniapp.common.UniModule{*;}
+-keep class com.example.shuke_microphone.** { *; }
+-keep class io.dcloud.feature.uniapp.** { *; }
+-keep @interface io.dcloud.feature.uniapp.annotation.UniJSMethod
+-keepclassmembers class * {
+    @io.dcloud.feature.uniapp.annotation.UniJSMethod *;
+}

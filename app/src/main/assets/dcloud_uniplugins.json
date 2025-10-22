@@ -47,6 +47,26 @@
           "class": "com.example.shuke_recorder.RecorderModule"
         }
       ]
+    },
+    {
+      "hooksClass": "",
+      "plugins": [
+        {
+          "type": "module",
+          "name": "shuke_microphone",
+          "class": "com.example.shuke_microphone.AudioDeviceLister"
+        }
+      ]
+    },
+    {
+      "hooksClass": "",
+      "plugins": [
+        {
+          "type": "module",
+          "name": "shuke_audioPlay",
+          "class": "com.example.shuke_audioplay.AudioModule"
+        }
+      ]
     }
   ]
 }
