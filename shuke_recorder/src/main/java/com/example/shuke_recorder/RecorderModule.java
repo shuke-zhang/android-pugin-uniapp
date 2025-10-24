@@ -1,9 +1,14 @@
 package com.example.shuke_recorder;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
-import android.os.Handler;
-import android.os.Looper;
+import android.content.pm.PackageManager;
+
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import android.util.Log;
 
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
@@ -15,141 +20,231 @@ import io.dcloud.feature.uniapp.bridge.UniJSCallback;
 import io.dcloud.feature.uniapp.common.UniModule;
 
 /**
- * 🎙️ Shuke Recorder 插件入口
- * 支持独立请求权限 / 回声消除控制 / 实时回调
+ * UniApp 原生桥接模块：
+ * - startRecord(params, callback)
+ * - stopRecord(callback)
+ * - requestPermission(callback)
+ * - hasPermission(callback)
+ * - checkPermission(callback)
+ *
+ * 回调事件：
+ * - {event:'start'}
+ * - {event:'process', volume, duration, sampleRate, buffers:[{...firstFrame...}]}
+ * - {event:'stop'}
+ * - {event:'error', message}
+ * - {event:'route', data:{label,typeName,deviceType,deviceId,productName,address,sampleRate,channels,format}}
  */
 public class RecorderModule extends UniModule {
+
+    private static final String TAG = "RecorderModule";
+    private static final int REQ_CODE_RECORD = 2001;
+
     private RecorderManager recorderManager;
-    private UniJSCallback eventCallback;
+    /** 持久回调，使用 invokeAndKeepAlive 推流事件 */
+    private UniJSCallback mCallback;
 
-    /** ✅ 请求录音权限（Promise 风格） */
-    @UniJSMethod(uiThread = true)
-    public void requestPermission(UniJSCallback callback) {
-        Context ctx = mUniSDKInstance.getContext();
-        Activity act = (Activity) ctx;
-        if (recorderManager == null) recorderManager = new RecorderManager(ctx);
-
-        if (recorderManager.hasPermission()) {
-            JSONObject ok = new JSONObject();
-            ok.put("granted", true);
-            ok.put("message", "录音权限已授予");
-            callback.invoke(ok);
-            return;
-        }
-
-        recorderManager.requestPermission(act);
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            JSONObject res = new JSONObject();
-            res.put("granted", recorderManager.hasPermission());
-            res.put("message", recorderManager.hasPermission() ? "授权成功" : "用户拒绝录音权限");
-            callback.invoke(res);
-        }, 800);
+    private Context getCtx() {
+        return mUniSDKInstance != null ? mUniSDKInstance.getContext() : null;
     }
 
-    /** ✅ 开始录音 */
+    private Activity getActivity() {
+        Context ctx = getCtx();
+        if (ctx instanceof Activity) return (Activity) ctx;
+        return null;
+    }
+
+    // --------------------- JS API ---------------------
+
+    /**
+     * 开始录音
+     * params: { sampleRate: number=16000, enableAEC: boolean, enableNS: boolean, enableAGC: boolean }
+     */
     @UniJSMethod(uiThread = true)
     public void startRecord(JSONObject params, UniJSCallback callback) {
-        Context ctx = mUniSDKInstance.getContext();
-        if (recorderManager == null) recorderManager = new RecorderManager(ctx);
-        this.eventCallback = callback;
+        this.mCallback = callback;
 
-        if (!recorderManager.hasPermission()) {
-            sendError("请先调用 requestPermission() 获取录音权限");
+        Context ctx = getCtx();
+        if (ctx == null) {
+            emitError("Context 为 null");
             return;
         }
 
-        String type = params.getString("type");
-        int sampleRate = params.getIntValue("sampleRate");
-        boolean aec = params.getBooleanValue("enableAEC");
-        boolean ns = params.getBooleanValue("enableNS");
-        boolean agc = params.getBooleanValue("enableAGC");
+        // 权限检查
+        if (!hasMicPermission(ctx)) {
+            emitError("未获得录音权限");
+            return;
+        }
 
-        if (sampleRate <= 0) sampleRate = 16000;
-        recorderManager.setEffectOptions(aec, ns, agc);
+        int sampleRate = 16000;
+        boolean enableAEC = true, enableNS = true, enableAGC = true;
+        try {
+            if (params != null) {
+                if (params.containsKey("sampleRate")) sampleRate = params.getIntValue("sampleRate");
+                if (params.containsKey("enableAEC"))  enableAEC  = params.getBooleanValue("enableAEC");
+                if (params.containsKey("enableNS"))   enableNS   = params.getBooleanValue("enableNS");
+                if (params.containsKey("enableAGC"))  enableAGC  = params.getBooleanValue("enableAGC");
+            }
+        } catch (Throwable ignore) {}
 
+        if (recorderManager == null) {
+            recorderManager = new RecorderManager(ctx);
+        }
+
+        // 配置监听器（包含 onRoute）
         recorderManager.setListener(new RecorderManager.Listener() {
             @Override
             public void onStart() {
-                sendStatus("start", "录音开始");
+                JSONObject ev = new JSONObject();
+                ev.put("event", "start");
+                safeEmit(ev);
             }
 
             @Override
-            public void onProcess(List<int[]> buffers, int volume, long durationMs, int sampleRate) {
-                JSONObject payload = new JSONObject();
-                JSONArray bufArr = new JSONArray();
-                // 1️⃣ 构造 PCM 原始数组
-                for (int[] arr : buffers) {
-                    JSONObject obj = new JSONObject();
-                    for (int i = 0; i < arr.length; i++) obj.put(String.valueOf(i), arr[i]);
-                    bufArr.add(obj);
+            public void onProcess(List<int[]> buffers, int volume, long durationMs, int sampleRateCb) {
+                JSONObject ev = new JSONObject();
+                ev.put("event", "process");
+                ev.put("volume", volume);
+                ev.put("duration", durationMs);
+                ev.put("sampleRate", sampleRateCb);
 
-
-
+                // 可选：把第一帧发出去（注意体积）
+                if (buffers != null && !buffers.isEmpty()) {
+                    int[] first = buffers.get(0);
+                    JSONObject b0 = new JSONObject();
+                    for (int i = 0; i < first.length; i++) {
+                        b0.put(String.valueOf(i), first[i]);
+                    }
+                    JSONArray arr = new JSONArray();
+                    arr.add(b0);
+                    ev.put("buffers", arr);
                 }
-                // 2️⃣ 转成 Base64（PCM 16-bit 小端）
-                byte[] pcmBytes = new byte[buffers.get(0).length * 2];
-                int idx = 0;
-                for (int sample : buffers.get(0)) {
-                    pcmBytes[idx++] = (byte) (sample & 0xff);
-                    pcmBytes[idx++] = (byte) ((sample >> 8) & 0xff);
-                }
-                String base64 = android.util.Base64.encodeToString(pcmBytes, android.util.Base64.NO_WRAP);
-                payload.put("buffers", bufArr);
-                payload.put("volume", volume);
-                payload.put("duration", durationMs);
-                payload.put("sampleRate", sampleRate);
-                payload.put("type", type);
-                payload.put("base64", base64);  // ✅ 加上这个！
-                eventCallback.invokeAndKeepAlive(payload);
+                safeEmit(ev);
             }
 
             @Override
             public void onStop() {
-                sendStatus("stop", "录音停止");
+                JSONObject ev = new JSONObject();
+                ev.put("event", "stop");
+                safeEmit(ev);
             }
 
             @Override
             public void onError(String message) {
-                sendError(message);
+                JSONObject ev = new JSONObject();
+                ev.put("event", "error");
+                ev.put("message", message);
+                safeEmit(ev);
+            }
+
+            /** 🔴 新增：录音通道信息（开始成功 & 路由变更时都会触发） */
+            @Override
+            public void onRoute(RecorderManager.RouteInfo info) {
+                try {
+                    JSONObject ev = new JSONObject();
+                    ev.put("event", "route");
+
+                    JSONObject data = new JSONObject();
+                    data.put("label", info.label);
+                    data.put("typeName", info.typeName);
+                    data.put("deviceType", info.deviceType);
+                    data.put("deviceId", info.deviceId);
+                    data.put("productName", info.productName);
+                    data.put("address", info.address);
+                    data.put("sampleRate", info.sampleRate);
+                    data.put("channels", info.channels);
+                    data.put("format", info.format);
+
+                    ev.put("data", data);
+                    safeEmit(ev);
+                } catch (Throwable t) {
+                    Log.w(TAG, "emit route failed: " + t.getMessage());
+                }
             }
         });
 
-        recorderManager.start(type, sampleRate);
-    }
-
-    /** ✅ 停止录音 */
-    @UniJSMethod(uiThread = true)
-    public void stopRecord(UniJSCallback callback) {
-        if (recorderManager != null) {
-            recorderManager.stop();
-            sendStatus("stop", "录音结束");
-            if (callback != null) {
-                JSONObject res = new JSONObject();
-                res.put("message", "录音已停止");
-                callback.invoke(res);
-            }
+        recorderManager.setEffectOptions(enableAEC, enableNS, enableAGC);
+        try {
+            recorderManager.start("voice", sampleRate);
+        } catch (Throwable t) {
+            emitError("start 失败: " + t.getMessage());
         }
     }
 
-    /** ✅ 动态切换回声消除开关 */
+    /** 停止录音 */
     @UniJSMethod(uiThread = true)
-    public void toggleAEC(boolean enable) {
-        if (recorderManager != null) recorderManager.toggleAEC(enable);
+    public void stopRecord(UniJSCallback cb) {
+        if (recorderManager != null) {
+            try {
+                recorderManager.stop();
+            } catch (Throwable ignore) {}
+        }
+        if (cb != null) {
+            JSONObject r = new JSONObject();
+            r.put("ok", true);
+            cb.invoke(r);
+        }
     }
 
-    private void sendStatus(String event, String msg) {
-        if (eventCallback == null) return;
-        JSONObject obj = new JSONObject();
-        obj.put("event", event);
-        obj.put("message", msg);
-        eventCallback.invokeAndKeepAlive(obj);
+    /** 拉起系统权限弹窗 */
+    @UniJSMethod(uiThread = true)
+    public void requestPermission(UniJSCallback cb) {
+        Activity act = getActivity();
+        JSONObject r = new JSONObject();
+        if (act == null) {
+            r.put("ok", false);
+            r.put("msg", "Activity 为 null");
+            if (cb != null) cb.invoke(r);
+            return;
+        }
+        try {
+            ActivityCompat.requestPermissions(act, new String[]{Manifest.permission.RECORD_AUDIO}, REQ_CODE_RECORD);
+        } catch (Throwable t) {
+            Log.w(TAG, "requestPermissions error: " + t.getMessage());
+        }
+        // 直接返回当前状态（最终结果请在前端轮询或 resume 时再查）
+        boolean granted = hasMicPermission(act);
+        r.put("ok", true);
+        r.put("granted", granted);
+        if (cb != null) cb.invoke(r);
     }
 
-    private void sendError(String msg) {
-        if (eventCallback == null) return;
-        JSONObject err = new JSONObject();
-        err.put("event", "error");
-        err.put("message", msg);
-        eventCallback.invokeAndKeepAlive(err);
+    /** 返回是否已授权（与 checkPermission 等价） */
+    @UniJSMethod(uiThread = true)
+    public void hasPermission(UniJSCallback cb) {
+        JSONObject r = new JSONObject();
+        boolean granted = hasMicPermission(getCtx());
+        r.put("ok", true);
+        r.put("granted", granted);
+        if (cb != null) cb.invoke(r);
+    }
+
+    /** 返回是否已授权（别名） */
+    @UniJSMethod(uiThread = true)
+    public void checkPermission(UniJSCallback cb) {
+        hasPermission(cb);
+    }
+
+    // --------------------- 辅助方法 ---------------------
+
+    private boolean hasMicPermission(Context ctx) {
+        if (ctx == null) return false;
+        return ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void emitError(String msg) {
+        JSONObject ev = new JSONObject();
+        ev.put("event", "error");
+        ev.put("message", msg);
+        safeEmit(ev);
+    }
+
+    /** 统一使用 invokeAndKeepAlive，保证回调可持续推送 */
+    private void safeEmit(JSONObject ev) {
+        try {
+            if (mCallback != null) mCallback.invokeAndKeepAlive(ev);
+        } catch (Throwable t) {
+            Log.w(TAG, "emit callback failed: " + t.getMessage());
+        }
     }
 }

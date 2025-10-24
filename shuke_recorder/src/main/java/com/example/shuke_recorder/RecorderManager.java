@@ -25,6 +25,9 @@ import java.util.List;
 
 /**
  * 🎧 高级录音管理器（支持 AEC/NS/AGC + 平滑音量计算）
+ * 新增：
+ *  - RouteInfo 数据结构
+ *  - Listener#onRoute(RouteInfo info) 回调：在“开始录音成功”与“路由变更”时回调当前录音通道信息
  */
 public class RecorderManager {
     private static final String TAG = "RecorderManager";
@@ -43,15 +46,47 @@ public class RecorderManager {
     private NoiseSuppressor ns;
     private AutomaticGainControl agc;
 
+    public static class RouteInfo {
+        public String label;           // 前缀描述：比如 "▶️ 开始录音" / "🔄 录音路由变更"
+        public String typeName;        // 内置麦克风 / 蓝牙 SCO 麦克风 / USB 设备 ...
+        public int deviceType;         // AudioDeviceInfo.TYPE_*
+        public int deviceId;           // 设备 ID（API 23+）
+        public String productName;     // 设备名
+        public String address;         // 设备地址（API 28+ 可能为空）
+        public int sampleRate;         // 当前 AudioRecord 采样率
+        public int channels;           // 当前通道数
+        public int format;             // PCM 编码（如 AudioFormat.ENCODING_PCM_16BIT）
+
+        @Override public String toString() {
+            return "RouteInfo{" +
+                    "label='" + label + '\'' +
+                    ", typeName='" + typeName + '\'' +
+                    ", deviceType=" + deviceType +
+                    ", deviceId=" + deviceId +
+                    ", productName='" + productName + '\'' +
+                    ", address='" + address + '\'' +
+                    ", sampleRate=" + sampleRate +
+                    ", channels=" + channels +
+                    ", format=" + format +
+                    '}';
+        }
+    }
+
     // 监听路由变化（API 24+）
     private final AudioRecord.OnRoutingChangedListener routingListener =
-            (audioRouting) -> logCurrentRoute("🔄 录音路由变更");
+            (audioRouting) -> {
+                logCurrentRoute("🔄 录音路由变更");
+                emitRouteInfo("🔄 录音路由变更");
+            };
 
     public interface Listener {
         void onStart();
         void onProcess(List<int[]> buffers, int volume, long durationMs, int sampleRate);
         void onStop();
         void onError(String message);
+
+        /** 🆕 新增：当前录音通道信息（开始成功与后续路由变化都会回调一次） */
+        void onRoute(RouteInfo info);
     }
 
     public RecorderManager(Context context) {
@@ -130,6 +165,9 @@ public class RecorderManager {
         // ✅ 打印“当前录音路由/音频通道”信息
         logCurrentRoute("▶️ 开始录音");
 
+        // ✅ 【新增】开始录音成功后，立刻回调一次当前录音通道信息
+        emitRouteInfo("▶️ 开始录音");
+
         // ✅ 监听后续路由变化（插拔耳机、蓝牙连接变化等）
         addRoutingListenerIfSupported();
 
@@ -203,7 +241,7 @@ public class RecorderManager {
     }
 
     // ------------------------------
-    // 🔎 路由&设备信息打印（核心新增）
+    // 🔎 路由&设备信息打印 + 回调
     // ------------------------------
 
     private void logCurrentRoute(String prefix) {
@@ -215,9 +253,8 @@ public class RecorderManager {
             if (dev != null) {
                 String typeStr = deviceTypeToString(dev.getType());
                 CharSequence product = dev.getProductName();
-                String addr = dev.getAddress(); // 一些设备可能返回空字符串
+                String addr = safeGetAddress(dev);
 
-                // 通道与采样信息（尽可能多给）
                 int sr = recorder.getSampleRate();
                 int ch = safeGetChannelCount(); // API 24+ 有 getChannelCount
                 int fmt = recorder.getAudioFormat(); // PCM_16BIT 等（整数）
@@ -237,7 +274,54 @@ public class RecorderManager {
         }
     }
 
+    /** 将当前路由信息通过 listener.onRoute 回调给前端（主线程） */
+    private void emitRouteInfo(String label) {
+        if (listener == null) return;
+        Handler main = new Handler(Looper.getMainLooper());
+        main.post(() -> {
+            RouteInfo info = buildCurrentRouteInfo(label);
+            try {
+                listener.onRoute(info);
+            } catch (Throwable t) {
+                Log.w(TAG, "onRoute callback error: " + t.getMessage());
+            }
+        });
+    }
+
+    /** 构造 RouteInfo（API 检查 + 兼容处理） */
+    private RouteInfo buildCurrentRouteInfo(String label) {
+        RouteInfo info = new RouteInfo();
+        info.label = label;
+        info.sampleRate = (recorder != null) ? recorder.getSampleRate() : 0;
+        info.channels = safeGetChannelCount();
+        info.format = (recorder != null) ? recorder.getAudioFormat() : AudioFormat.ENCODING_INVALID;
+
+        if (recorder != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                AudioDeviceInfo dev = recorder.getRoutedDevice();
+                if (dev != null) {
+                    int type = dev.getType();
+                    info.deviceType = type;
+                    info.typeName = deviceTypeToString(type);
+                    info.deviceId = safeGetDeviceId(dev);
+                    info.productName = String.valueOf(dev.getProductName());
+                    info.address = safeGetAddress(dev);
+                    return info;
+                }
+            } catch (Throwable ignored) {}
+        }
+        // 兜底（低版本或拿不到路由时）
+        info.deviceType = -1;
+        info.typeName = "未知/不支持";
+        info.deviceId = -1;
+        info.productName = "未知设备";
+        info.address = "";
+        return info;
+    }
+
+    /** API 24+ 有 getChannelCount */
     private int safeGetChannelCount() {
+        if (recorder == null) return 1;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {
                 return recorder.getChannelCount();
@@ -245,6 +329,24 @@ public class RecorderManager {
         }
         // 根据构造参数我们是 MONO
         return 1;
+    }
+
+    /** API 23+ 的设备 ID */
+    private int safeGetDeviceId(AudioDeviceInfo dev) {
+        if (dev == null) return -1;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try { return dev.getId(); } catch (Throwable ignored) {}
+        }
+        return -1;
+    }
+
+    /** API 28+ 才能拿地址；有些设备返回空字符串 */
+    private String safeGetAddress(AudioDeviceInfo dev) {
+        if (dev == null) return "";
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try { return dev.getAddress(); } catch (Throwable ignored) {}
+        }
+        return "";
     }
 
     private void addRoutingListenerIfSupported() {
