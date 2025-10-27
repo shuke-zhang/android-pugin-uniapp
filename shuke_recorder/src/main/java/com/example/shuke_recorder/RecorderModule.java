@@ -4,11 +4,11 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.util.Log;
 
+import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-
-import android.util.Log;
 
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
@@ -20,19 +20,12 @@ import io.dcloud.feature.uniapp.bridge.UniJSCallback;
 import io.dcloud.feature.uniapp.common.UniModule;
 
 /**
- * UniApp 原生桥接模块：
- * - startRecord(params, callback)
- * - stopRecord(callback)
- * - requestPermission(callback)
- * - hasPermission(callback)
- * - checkPermission(callback)
- *
- * 回调事件：
- * - {event:'start'}
- * - {event:'process', volume, duration, sampleRate, buffers:[{...firstFrame...}]}
- * - {event:'stop'}
- * - {event:'error', message}
- * - {event:'route', data:{label,typeName,deviceType,deviceId,productName,address,sampleRate,channels,format}}
+ * 🎤 UniApp 原生录音插件模块
+ * 支持：
+ * - 权限请求/检测
+ * - 录音（AEC/NS/AGC）
+ * - 路由变更回调
+ * - 统一 JS 回调事件流
  */
 public class RecorderModule extends UniModule {
 
@@ -40,8 +33,8 @@ public class RecorderModule extends UniModule {
     private static final int REQ_CODE_RECORD = 2001;
 
     private RecorderManager recorderManager;
-    /** 持久回调，使用 invokeAndKeepAlive 推流事件 */
     private UniJSCallback mCallback;
+    private UniJSCallback pendingCb; // 权限请求回调
 
     private Context getCtx() {
         return mUniSDKInstance != null ? mUniSDKInstance.getContext() : null;
@@ -53,23 +46,17 @@ public class RecorderModule extends UniModule {
         return null;
     }
 
-    // --------------------- JS API ---------------------
+    // ==================== 录音相关 ====================
 
-    /**
-     * 开始录音
-     * params: { sampleRate: number=16000, enableAEC: boolean, enableNS: boolean, enableAGC: boolean }
-     */
     @UniJSMethod(uiThread = true)
     public void startRecord(JSONObject params, UniJSCallback callback) {
         this.mCallback = callback;
-
         Context ctx = getCtx();
         if (ctx == null) {
             emitError("Context 为 null");
             return;
         }
 
-        // 权限检查
         if (!hasMicPermission(ctx)) {
             emitError("未获得录音权限");
             return;
@@ -80,34 +67,28 @@ public class RecorderModule extends UniModule {
         try {
             if (params != null) {
                 if (params.containsKey("sampleRate")) sampleRate = params.getIntValue("sampleRate");
-                if (params.containsKey("enableAEC"))  enableAEC  = params.getBooleanValue("enableAEC");
-                if (params.containsKey("enableNS"))   enableNS   = params.getBooleanValue("enableNS");
-                if (params.containsKey("enableAGC"))  enableAGC  = params.getBooleanValue("enableAGC");
+                if (params.containsKey("enableAEC")) enableAEC = params.getBooleanValue("enableAEC");
+                if (params.containsKey("enableNS")) enableNS = params.getBooleanValue("enableNS");
+                if (params.containsKey("enableAGC")) enableAGC = params.getBooleanValue("enableAGC");
             }
         } catch (Throwable ignore) {}
 
-        if (recorderManager == null) {
-            recorderManager = new RecorderManager(ctx);
-        }
+        if (recorderManager == null) recorderManager = new RecorderManager(ctx);
+        recorderManager.setEffectOptions(enableAEC, enableNS, enableAGC);
 
-        // 配置监听器（包含 onRoute）
         recorderManager.setListener(new RecorderManager.Listener() {
             @Override
             public void onStart() {
-                JSONObject ev = new JSONObject();
-                ev.put("event", "start");
-                safeEmit(ev);
+                emitEvent("start", null);
             }
 
             @Override
             public void onProcess(List<int[]> buffers, int volume, long durationMs, int sampleRateCb) {
                 JSONObject ev = new JSONObject();
-                ev.put("event", "process");
                 ev.put("volume", volume);
                 ev.put("duration", durationMs);
                 ev.put("sampleRate", sampleRateCb);
 
-                // 可选：把第一帧发出去（注意体积）
                 if (buffers != null && !buffers.isEmpty()) {
                     int[] first = buffers.get(0);
                     JSONObject b0 = new JSONObject();
@@ -118,51 +99,41 @@ public class RecorderModule extends UniModule {
                     arr.add(b0);
                     ev.put("buffers", arr);
                 }
-                safeEmit(ev);
+
+                emitEvent("process", ev);
             }
 
             @Override
             public void onStop() {
-                JSONObject ev = new JSONObject();
-                ev.put("event", "stop");
-                safeEmit(ev);
+                emitEvent("stop", null);
             }
 
             @Override
             public void onError(String message) {
-                JSONObject ev = new JSONObject();
-                ev.put("event", "error");
-                ev.put("message", message);
-                safeEmit(ev);
+                JSONObject e = new JSONObject();
+                e.put("message", message);
+                emitEvent("error", e);
             }
 
-            /** 🔴 新增：录音通道信息（开始成功 & 路由变更时都会触发） */
             @Override
             public void onRoute(RecorderManager.RouteInfo info) {
-                try {
-                    JSONObject ev = new JSONObject();
-                    ev.put("event", "route");
+                JSONObject data = new JSONObject();
+                data.put("label", info.label);
+                data.put("typeName", info.typeName);
+                data.put("deviceType", info.deviceType);
+                data.put("deviceId", info.deviceId);
+                data.put("productName", info.productName);
+                data.put("address", info.address);
+                data.put("sampleRate", info.sampleRate);
+                data.put("channels", info.channels);
+                data.put("format", info.format);
 
-                    JSONObject data = new JSONObject();
-                    data.put("label", info.label);
-                    data.put("typeName", info.typeName);
-                    data.put("deviceType", info.deviceType);
-                    data.put("deviceId", info.deviceId);
-                    data.put("productName", info.productName);
-                    data.put("address", info.address);
-                    data.put("sampleRate", info.sampleRate);
-                    data.put("channels", info.channels);
-                    data.put("format", info.format);
-
-                    ev.put("data", data);
-                    safeEmit(ev);
-                } catch (Throwable t) {
-                    Log.w(TAG, "emit route failed: " + t.getMessage());
-                }
+                JSONObject ev = new JSONObject();
+                ev.put("data", data);
+                emitEvent("route", ev);
             }
         });
 
-        recorderManager.setEffectOptions(enableAEC, enableNS, enableAGC);
         try {
             recorderManager.start("voice", sampleRate);
         } catch (Throwable t) {
@@ -170,13 +141,12 @@ public class RecorderModule extends UniModule {
         }
     }
 
-    /** 停止录音 */
     @UniJSMethod(uiThread = true)
     public void stopRecord(UniJSCallback cb) {
         if (recorderManager != null) {
             try {
                 recorderManager.stop();
-            } catch (Throwable ignore) {}
+            } catch (Throwable ignored) {}
         }
         if (cb != null) {
             JSONObject r = new JSONObject();
@@ -185,7 +155,8 @@ public class RecorderModule extends UniModule {
         }
     }
 
-    /** 拉起系统权限弹窗 */
+    // ==================== 权限处理 ====================
+
     @UniJSMethod(uiThread = true)
     public void requestPermission(UniJSCallback cb) {
         Activity act = getActivity();
@@ -193,38 +164,60 @@ public class RecorderModule extends UniModule {
         if (act == null) {
             r.put("ok", false);
             r.put("msg", "Activity 为 null");
-            if (cb != null) cb.invoke(r);
+            cb.invoke(r);
             return;
         }
-        try {
-            ActivityCompat.requestPermissions(act, new String[]{Manifest.permission.RECORD_AUDIO}, REQ_CODE_RECORD);
-        } catch (Throwable t) {
-            Log.w(TAG, "requestPermissions error: " + t.getMessage());
+
+        if (hasMicPermission(act)) {
+            r.put("ok", true);
+            r.put("granted", true);
+            cb.invoke(r);
+            return;
         }
-        // 直接返回当前状态（最终结果请在前端轮询或 resume 时再查）
-        boolean granted = hasMicPermission(act);
-        r.put("ok", true);
-        r.put("granted", granted);
-        if (cb != null) cb.invoke(r);
+
+        pendingCb = cb;
+        try {
+            ActivityCompat.requestPermissions(
+                    act,
+                    new String[]{Manifest.permission.RECORD_AUDIO},
+                    REQ_CODE_RECORD
+            );
+        } catch (Throwable t) {
+            r.put("ok", false);
+            r.put("msg", t.getMessage());
+            cb.invoke(r);
+        }
     }
 
-    /** 返回是否已授权（与 checkPermission 等价） */
+    @Override
+    public void onRequestPermissionsResult(int requestCode,
+                                           @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+        if (requestCode == REQ_CODE_RECORD && pendingCb != null) {
+            JSONObject r = new JSONObject();
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            r.put("ok", true);
+            r.put("granted", granted);
+            pendingCb.invoke(r);
+            pendingCb = null;
+            Log.i(TAG, "🎯 权限回调结果: " + granted);
+        }
+    }
+
     @UniJSMethod(uiThread = true)
     public void hasPermission(UniJSCallback cb) {
         JSONObject r = new JSONObject();
         boolean granted = hasMicPermission(getCtx());
         r.put("ok", true);
         r.put("granted", granted);
-        if (cb != null) cb.invoke(r);
+        cb.invoke(r);
     }
 
-    /** 返回是否已授权（别名） */
     @UniJSMethod(uiThread = true)
     public void checkPermission(UniJSCallback cb) {
         hasPermission(cb);
     }
-
-    // --------------------- 辅助方法 ---------------------
 
     private boolean hasMicPermission(Context ctx) {
         if (ctx == null) return false;
@@ -232,19 +225,130 @@ public class RecorderModule extends UniModule {
                 == PackageManager.PERMISSION_GRANTED;
     }
 
+    // ==================== 辅助方法 ====================
+
+    private void emitEvent(String type, JSONObject data) {
+        JSONObject ev = new JSONObject();
+        ev.put("event", type);
+        if (data != null) ev.putAll(data);
+        if (mCallback != null) {
+            mCallback.invokeAndKeepAlive(ev);
+        }
+    }
+
     private void emitError(String msg) {
         JSONObject ev = new JSONObject();
         ev.put("event", "error");
         ev.put("message", msg);
-        safeEmit(ev);
-    }
-
-    /** 统一使用 invokeAndKeepAlive，保证回调可持续推送 */
-    private void safeEmit(JSONObject ev) {
-        try {
-            if (mCallback != null) mCallback.invokeAndKeepAlive(ev);
-        } catch (Throwable t) {
-            Log.w(TAG, "emit callback failed: " + t.getMessage());
+        if (mCallback != null) {
+            mCallback.invokeAndKeepAlive(ev);
         }
     }
+
+
+    /**
+     * ==========================================
+     * 🎵 文件保存与删除 (兼容 Android 5 - 14)
+     * ==========================================
+     */
+    @UniJSMethod(uiThread = false)
+    public void uniSaveLocalFile(String name, String base64Data, UniJSCallback cb) {
+        JSONObject result = new JSONObject();
+        try {
+            if (name == null || name.trim().isEmpty()) {
+                result.put("ok", false);
+                result.put("msg", "文件名不能为空");
+                if (cb != null) cb.invoke(result);
+                return;
+            }
+
+            Context ctx = getCtx();
+            if (ctx == null) {
+                result.put("ok", false);
+                result.put("msg", "Context 为 null");
+                if (cb != null) cb.invoke(result);
+                return;
+            }
+
+            // ✅ 获取安全的可写目录（App 私有文件夹）
+            java.io.File dir = ctx.getExternalFilesDir("recorder");
+            if (dir == null) dir = ctx.getFilesDir(); // Android 5 兜底
+            if (!dir.exists()) dir.mkdirs();
+
+            // ✅ Base64 解码后写入文件
+            byte[] data = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT);
+            java.io.File file = new java.io.File(dir, name);
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(file);
+            fos.write(data);
+            fos.flush();
+            fos.close();
+
+            String absPath = file.getAbsolutePath();
+            Log.i(TAG, "✅ 文件已保存到: " + absPath);
+
+            result.put("ok", true);
+            result.put("path", absPath);
+            result.put("msg", "文件保存成功");
+        } catch (Throwable e) {
+            Log.e(TAG, "❌ 文件保存失败: " + e.getMessage());
+            result.put("ok", false);
+            result.put("msg", e.getMessage());
+        }
+
+        if (cb != null) cb.invoke(result);
+    }
+
+    /**
+     * 删除应用私有目录下的文件
+     */
+    @UniJSMethod(uiThread = false)
+    public void uniRemoveLocalFile(String path, UniJSCallback cb) {
+        JSONObject result = new JSONObject();
+        try {
+            if (path == null || path.trim().isEmpty()) {
+                result.put("ok", false);
+                result.put("msg", "路径不能为空");
+                if (cb != null) cb.invoke(result);
+                return;
+            }
+
+            Context ctx = getCtx();
+            if (ctx == null) {
+                result.put("ok", false);
+                result.put("msg", "Context 为 null");
+                if (cb != null) cb.invoke(result);
+                return;
+            }
+
+            java.io.File file = new java.io.File(path);
+
+            // ✅ 防止删除外部目录文件（安全限制）
+            String safeRoot = ctx.getExternalFilesDir(null).getAbsolutePath();
+            if (!file.getAbsolutePath().startsWith(safeRoot)) {
+                result.put("ok", false);
+                result.put("msg", "拒绝删除非应用私有目录文件");
+                Log.w(TAG, "⚠️ 拒绝删除路径: " + path);
+                if (cb != null) cb.invoke(result);
+                return;
+            }
+
+            if (file.exists()) {
+                boolean deleted = file.delete();
+                result.put("ok", deleted);
+                result.put("msg", deleted ? "文件已删除" : "删除失败");
+                Log.i(TAG, deleted ? "🗑️ 删除成功: " + path : "⚠️ 删除失败: " + path);
+            } else {
+                result.put("ok", false);
+                result.put("msg", "文件不存在");
+                Log.w(TAG, "⚠️ 文件不存在: " + path);
+            }
+        } catch (Throwable e) {
+            result.put("ok", false);
+            result.put("msg", e.getMessage());
+            Log.e(TAG, "❌ 删除异常: " + e.getMessage());
+        }
+
+        if (cb != null) cb.invoke(result);
+    }
+
 }
